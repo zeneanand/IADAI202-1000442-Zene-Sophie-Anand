@@ -1,56 +1,85 @@
-"""Statistics. Convention: SAMPLE standard deviation (ddof = 1), used everywhere."""
+"""Statistical aggregations and metrics calculations for FA-2."""
+
 import numpy as np
 import pandas as pd
 
-DDOF = 1
-TRAFFIC_ORDER = ["Low", "Medium", "High", "Jam"]
-AGE_ORDER = ["Below 25", "25–40", "Above 40"]
+CORE_NUMERIC = ["Delivery_Time", "Agent_Age", "Agent_Rating"]
 
 
-def ordered(df: pd.DataFrame, col: str) -> list:
-    """Categories actually present in the data, in a sensible order."""
-    present = list(df[col].dropna().unique())
-    if col == "Traffic":
-        known = [v for v in TRAFFIC_ORDER if v in present]
-        return known + sorted(v for v in present if v not in known)
-    if col == "Agent_Age_Group":
-        return [v for v in AGE_ORDER + ["Unknown"] if v in present]
-    if col == "Late_Status":
-        return [v for v in ["Late", "On-Time"] if v in present]
-    return sorted(present)
+def late_threshold(series):
+    s = series.dropna()
+    if s.empty:
+        return np.nan, np.nan, np.nan
+    mu = float(s.mean())
+    sd = float(s.std(ddof=1)) if len(s) > 1 else 0.0
+    return mu, sd, mu + sd
 
 
-def late_threshold(times: pd.Series):
-    """μ, σ and the project-defined threshold T_late = μ + σ."""
-    mu = times.mean()
-    sd = times.std(ddof=DDOF) if len(times) > 1 else np.nan
-    return mu, sd, (mu + sd if pd.notna(sd) else np.nan)
+def add_late(df, threshold):
+    out = df.copy()
+    out["Is_Late"] = out["Delivery_Time"] > threshold
+    out["Late_Status"] = np.where(out["Is_Late"], "Late (> T_late)", "On-time")
+    return out
 
 
-def add_late(df: pd.DataFrame, threshold: float) -> pd.DataFrame:
-    df = df.copy()
-    df["Is_Late"] = (df["Delivery_Time"] > threshold) if pd.notna(threshold) else False
-    df["Late_Status"] = np.where(df["Is_Late"], "Late", "On-Time")
-    return df
-
-
-def summary(df: pd.DataFrame, threshold: float) -> dict:
-    t = df["Delivery_Time"]
-    n, late = len(t), int(df["Is_Late"].sum())
-    q1, q3 = t.quantile(.25), t.quantile(.75)
+def summary(df, threshold):
+    t = df["Delivery_Time"].dropna()
+    n = len(t)
+    if n == 0:
+        return {
+            "Total orders": 0,
+            "Mean (μ)": 0.0,
+            "Std (σ)": 0.0,
+            "Median": 0.0,
+            "IQR": 0.0,
+            "Late orders": 0,
+            "Late delivery %": 0.0,
+            "On-time orders": 0,
+            "On-time %": 0.0,
+        }
+    mu = float(t.mean())
+    sd = float(t.std(ddof=1)) if n > 1 else 0.0
+    late = int((t > threshold).sum())
+    late_pct = (late / n) * 100.0
     return {
-        "Total orders": n, "Mean (μ)": t.mean(), "Median": t.median(),
-        "Std deviation (σ, sample)": t.std(ddof=DDOF) if n > 1 else np.nan,
-        "Minimum": t.min(), "Maximum": t.max(), "Q1": q1, "Q3": q3, "IQR": q3 - q1,
-        "Late threshold T_late (global μ+σ)": threshold, "Late orders": late,
-        "On-time orders": n - late, "Late delivery %": late / n * 100 if n else np.nan,
+        "Total orders": n,
+        "Mean (μ)": mu,
+        "Std (σ)": sd,
+        "Median": float(t.median()),
+        "IQR": float(t.quantile(0.75) - t.quantile(0.25)),
+        "Late orders": late,
+        "Late delivery %": late_pct,
+        "On-time orders": n - late,
+        "On-time %": 100.0 - late_pct,
     }
 
 
-def group_table(df: pd.DataFrame, by) -> pd.DataFrame:
-    t = df.groupby(by).agg(Orders=("Delivery_Time", "count"), Mean=("Delivery_Time", "mean"),
-                           Median=("Delivery_Time", "median"), Std=("Delivery_Time", lambda s: s.std(ddof=DDOF)),
-                           Min=("Delivery_Time", "min"), Max=("Delivery_Time", "max"),
-                           Late_Orders=("Is_Late", "sum")).reset_index()
-    t["Late_%"] = t["Late_Orders"] / t["Orders"] * 100
-    return t
+def group_table(df, by, target="Delivery_Time"):
+    g = df.groupby(by)[target].agg(
+        Orders="count",
+        Mean="mean",
+        Median="median",
+        Std=lambda s: s.std(ddof=1) if len(s) > 1 else 0.0,
+        Q25=lambda s: s.quantile(0.25),
+        Q75=lambda s: s.quantile(0.75),
+    ).reset_index()
+    total_orders = len(df)
+    g["Share_%"] = (g["Orders"] / total_orders * 100.0) if total_orders > 0 else 0.0
+    if "Is_Late" in df.columns:
+        late_g = df.groupby(by)["Is_Late"].agg(Late="sum", Late_pct=lambda s: s.mean() * 100.0).reset_index()
+        merge_cols = [by] if isinstance(by, str) else by
+        g = g.merge(late_g, on=merge_cols)
+        g.rename(columns={"Late_pct": "Late_%"}, inplace=True)
+    return g
+
+
+def ordered(df, col):
+    u = df[col].dropna().unique().tolist()
+    order_maps = {
+        "Traffic": ["Low", "Medium", "High", "Jam"],
+        "Agent_Age_Group": ["Below 25", "25–40", "Above 40"],
+        "Late_Status": ["On-time", "Late (> T_late)"],
+    }
+    if col in order_maps:
+        return [x for x in order_maps[col] if x in u]
+    return sorted(u, key=lambda x: str(x).lower())
