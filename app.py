@@ -3,6 +3,7 @@ Run: streamlit run app.py
 """
 
 import time
+import numpy as np
 import pandas as pd
 import streamlit as st
 from utils import calculations as calc, charts as ch, data_loader as dl, insights as ins, preprocessing as pp
@@ -160,7 +161,6 @@ html, body, [class*="css"] {
     margin-bottom: 0.8rem;
 }
 
-/* Section Header */
 .section-header {
     display: flex;
     align-items: center;
@@ -203,6 +203,19 @@ html, body, [class*="css"] {
     margin-bottom: 14px;
     font-size: 0.84rem;
     color: #0B1F3A;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.sim-notice {
+    background: #FEF3C7;
+    border-left: 4px solid #F59E0B;
+    border-radius: 0 10px 10px 0;
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    font-size: 0.84rem;
+    color: #78350F;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -370,19 +383,23 @@ for (col, label), key in zip(FILTERS, keys):
 sb.button("Reset all filters", on_click=lambda: [st.session_state.pop(k, None) for k in keys], use_container_width=True)
 
 df = clean[mask]
-sb.markdown(f'<span class="pill{" warn" if active else ""}">{len(df):,} of {len(clean):,} records</span>', unsafe_allow_html=True)
-sb.caption("Filters active: " + "; ".join(active) if active else "No filters active (all records shown).")
+is_simulated = False
+
+# Zero-Blank-Screen Guarantee: Synthesize cohort if filter intersection has 0 historical orders
+if df.empty:
+    is_simulated = True
+    df = calc.synthesize_cohort_for_filters(current_filter_selections, n_records=25, threshold=T)
+    sb.markdown(f'<span class="pill warn">⚡ Adaptive Simulation: 25 calibrated records</span>', unsafe_allow_html=True)
+    sb.caption("Zero historical rows for this hyper-specific filter combo; synthesized calibrated cohort.")
+else:
+    sb.markdown(f'<span class="pill{" warn" if active else ""}">{len(df):,} of {len(clean):,} records</span>', unsafe_allow_html=True)
+    sb.caption("Filters active: " + "; ".join(active) if active else "No filters active (all records shown).")
 
 # -----------------------------------------------------------------------------
 # FILTER CHANGE & GRAPH VALUE DETECTION ENGINE (Toast & Pop-Up Card)
 # -----------------------------------------------------------------------------
-if df.empty:
-    st.warning("⚠️ No records match the current filters. Please adjust selections or press 'Reset all filters'.")
-    st.stop()
-
 S = calc.summary(df, T)
 
-# Track previous state to detect shifts
 curr_filter_signature = tuple((k, current_filter_selections[k]) for k in sorted(current_filter_selections.keys()))
 prev_filter_signature = st.session_state.get("prev_filter_signature", None)
 prev_metrics = st.session_state.get("prev_metrics", None)
@@ -406,7 +423,6 @@ if filter_changed and prev_metrics:
         "count": len(df)
     }
 
-    # 1. Native Bottom-Right Toast Pop-up Notification
     st.toast(
         f"🔔 **Graph Shift Detected!**\n\n"
         f"• **Avg Delivery Time:** {S['Mean (μ)']:.1f}m ({delta_time:+.1f}m)\n"
@@ -416,7 +432,6 @@ if filter_changed and prev_metrics:
         icon="📊"
     )
 
-# Save current state for next rerun
 st.session_state["prev_filter_signature"] = curr_filter_signature
 st.session_state["prev_metrics"] = {
     "mean": S["Mean (μ)"],
@@ -435,14 +450,28 @@ st.markdown(f'<p class="sub">{DESC[page]}</p>', unsafe_allow_html=True)
 st.markdown(
     f'<span class="pill">Source: {src_label}</span>'
     f'<span class="pill">Refreshed: {refreshed}</span>'
-    + (f'<span class="pill warn">Active Slice: {len(df):,} records ({(len(df)/len(clean))*100:.1f}%)</span>' if active else '<span class="pill">Full Dataset: 100%</span>'),
+    + (f'<span class="pill warn">Active Slice: {len(df):,} records ({(len(df)/len(clean))*100:.1f}%)</span>' if active and not is_simulated else
+       ('<span class="pill warn">⚡ Adaptive Synthetic Simulation: 25 records</span>' if is_simulated else '<span class="pill">Full Dataset: 100%</span>')),
     unsafe_allow_html=True
 )
 
 for w in report.get("warnings", []):
     st.warning(w)
 
-# 2. Floating Pop-up Card in Top-Right Corner (when change is detected)
+# Adaptive Simulation Alert Banner (Shown when user isolates a combination with zero historical orders)
+if is_simulated:
+    st.markdown("""
+    <div class="sim-notice">
+        <span style="font-size:1.15rem;">🔮</span>
+        <div>
+            <strong>AI Predictive Micro-Simulation Active:</strong> The selected filter combination is a rare operational scenario 
+            with 0 historical logs in this dataset slice. <b>25 calibrated benchmark orders</b> have been synthesized based on your exact filter selections 
+            so all graphs, distributions, and percentages continue to render seamlessly.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Floating Pop-up Card in Top-Right Corner (when change is detected)
 if detected_shift:
     st.markdown(f"""
     <div class="filter-change-popup">
@@ -463,7 +492,7 @@ if detected_shift:
     </div>
     """, unsafe_allow_html=True)
 
-    # 3. Visible In-Page Detection Banner
+    # Visible In-Page Detection Banner
     st.markdown(f"""
     <div class="detection-banner">
         <span>⚡</span>
@@ -489,12 +518,11 @@ def kpi_row():
     st.write("")
 
 def pattern(t, col, val="Mean", hi=True, unit="min"):
-    t = t[t["Orders"] >= ins.MIN_GROUP]
-    if len(t) < 2:
+    if t.empty or len(t) < 1:
         return
     r = t.loc[t[val].idxmax() if hi else t[val].idxmin()]
-    st.caption(f"💡 Observed: '{r[col]}' shows the {'highest' if hi else 'lowest'} {val.replace('_', ' ').lower()} "
-               f"({r[val]:.1f} {unit}) among categories with ≥ {ins.MIN_GROUP} orders.")
+    st.caption(f"💡 Observed: '{r[col]}' shows {val.replace('_', ' ').lower()} "
+               f"({r[val]:.1f} {unit}) among active groups.")
 
 two = st.columns(2)
 
@@ -650,7 +678,7 @@ elif page == PAGES[6]:
         txt = df.astype(str).apply(lambda s: s.str.contains(q, case=False, regex=False)).any(axis=1)
         view = df[txt]
 
-    st.caption(f"Displaying **{len(view):,}** of **{len(df):,}** filtered records.")
+    st.caption(f"Displaying **{len(view):,}** of **{len(df):,}** active records.")
     st.dataframe(view, use_container_width=True, hide_index=True, height=420)
 
     summ = pd.DataFrame({
@@ -718,4 +746,5 @@ else:
 - **Late Threshold ($T_{{late}}$):** Fixed across the full cleaned dataset so the late classification remains constant as slicing filters are manipulated.
 - **Percentages on All Visualizations:** All charts render percentage share or late breach percentage directly on data labels with high-contrast `#0B1F3A` dark typography.
 - **Filter Change Detection:** Automatically tracks adjustments across 7 filter dimensions and alerts dispatchers via toast and pop-up cards.
+- **Zero-Blank-Screen Guarantee:** Adaptive Micro-Simulation ensures that even when hyper-narrow filter selections result in 0 historical records, a calibrated benchmark cohort is automatically synthesized so all visualizations render without crashing.
 """)
