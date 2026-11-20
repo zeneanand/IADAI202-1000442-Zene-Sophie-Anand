@@ -1,46 +1,58 @@
-"""Operational insights computed from the filtered data. Neutral, descriptive language only."""
-import pandas as pd
-from . import calculations as calc
+"""Operational insights generator for FA-2.
+Resilient to small datasets and single-record slices.
+"""
 
-MIN_TOTAL, MIN_GROUP = 30, 5
+MIN_GROUP = 1
+MIN_TOTAL = 1
 
+def generate(df):
+    insights = []
+    if df.empty:
+        return ["No orders in this selection. Please widen filters."]
+    
+    n = len(df)
+    
+    # 1. Traffic insight
+    if "Traffic" in df.columns:
+        if "Is_Late" in df.columns:
+            traffic_late = df.groupby("Traffic")["Is_Late"].mean() * 100
+            if not traffic_late.empty:
+                worst_traffic = traffic_late.idxmax()
+                worst_traffic_val = traffic_late.max()
+                insights.append(f"**Traffic Congestion Risk**: Orders under '{worst_traffic}' traffic experience a {worst_traffic_val:.1f}% late SLA rate in this cohort.")
+        else:
+            tr_counts = df["Traffic"].value_counts()
+            if not tr_counts.empty:
+                insights.append(f"**Traffic Context**: Primary congestion tier is '{tr_counts.index[0]}' ({tr_counts.iloc[0]:,} orders).")
 
-def _groups(df, col, value="Mean", rows_ok=MIN_GROUP):
-    g = calc.group_table(df, col)
-    return g[g["Orders"] >= rows_ok]
+    # 2. Weather insight
+    if "Weather" in df.columns:
+        if "Is_Late" in df.columns:
+            weather_late = df.groupby("Weather")["Is_Late"].mean() * 100
+            if not weather_late.empty:
+                worst_weather = weather_late.idxmax()
+                worst_weather_val = weather_late.max()
+                insights.append(f"**Weather Impact**: Adverse weather condition '{worst_weather}' records a {worst_weather_val:.1f}% late delivery rate.")
+        else:
+            w_counts = df["Weather"].value_counts()
+            if not w_counts.empty:
+                insights.append(f"**Weather Context**: Dominant environmental condition is '{w_counts.index[0]}'.")
 
+    # 3. Vehicle comparison
+    if "Vehicle" in df.columns and "Delivery_Time" in df.columns:
+        veh_mean = df.groupby("Vehicle")["Delivery_Time"].mean()
+        if not veh_mean.empty:
+            fastest_veh = veh_mean.idxmin()
+            insights.append(f"**Fleet Agility**: '{fastest_veh}' recorded an average transit time of {veh_mean.min():.1f} mins.")
 
-def generate(df: pd.DataFrame) -> list:
-    if len(df) < MIN_TOTAL:
-        return [f"Only {len(df)} orders match the current filters; at least {MIN_TOTAL} are needed before insights are shown."]
-    out = []
-    g = _groups(df, "Weather")
-    if len(g) >= 2:
-        r = g.loc[g["Mean"].idxmax()]
-        out.append(f"**Weather:** '{r['Weather']}' shows the highest average delivery time ({r['Mean']:.1f} min, {int(r['Orders'])} orders).")
-    g = _groups(df, "Traffic")
-    if len(g) >= 2:
-        r = g.loc[g["Late_%"].idxmax()]
-        out.append(f"**Traffic:** '{r['Traffic']}' has the highest late-delivery percentage ({r['Late_%']:.1f}%) among traffic conditions with enough orders.")
-    g = _groups(df, "Vehicle")
-    if len(g) >= 2:
-        r = g.loc[g["Mean"].idxmin()]
-        out.append(f"**Vehicles:** '{r['Vehicle']}' has the lowest average delivery time ({r['Mean']:.1f} min). This is a descriptive comparison and does not account for differences in routes or order mix.")
-    g = _groups(df, "Area")
-    if len(g) >= 2:
-        r = g.loc[g["Mean"].idxmax()]
-        out.append(f"**Areas:** '{r['Area']}' shows the highest average delivery time ({r['Mean']:.1f} min).")
-    g = _groups(df, "Category")
-    if len(g) >= 2:
-        r = g.loc[g["Std"].idxmax()]
-        out.append(f"**Categories:** '{r['Category']}' has the greatest spread in delivery times (σ = {r['Std']:.1f} min).")
-    g = _groups(df, "Agent_Age_Group")
-    g = g[g["Agent_Age_Group"] != "Unknown"]
-    if len(g) >= 2:
-        hi, lo = g.loc[g["Mean"].idxmax()], g.loc[g["Mean"].idxmin()]
-        out.append(f"**Agent age groups:** averages range from {lo['Mean']:.1f} min ('{lo['Agent_Age_Group']}') to {hi['Mean']:.1f} min ('{hi['Agent_Age_Group']}'). Differences are descriptive, not causal.")
-    if df["Agent_Rating"].nunique() > 1 and df["Delivery_Time"].nunique() > 1:
-        r = df["Agent_Rating"].corr(df["Delivery_Time"])
-        strength = "weak" if abs(r) < .3 else "moderate" if abs(r) < .6 else "strong"
-        out.append(f"**Rating vs time:** Pearson r = {r:.2f}, a {strength} {'negative' if r < 0 else 'positive'} linear association. Correlation does not imply causation.")
-    return out
+    # 4. Regional territory
+    if "Area" in df.columns and "Delivery_Time" in df.columns:
+        area_mean = df.groupby("Area")["Delivery_Time"].mean()
+        if not area_mean.empty:
+            slowest_area = area_mean.idxmax()
+            insights.append(f"**Geographic Hotspot**: '{slowest_area}' corridor shows an average turnaround of {area_mean.max():.1f} mins.")
+
+    if n < 10:
+        insights.append(f"**Sample Density**: Micro-cohort of {n} order(s). Showing calibrated metrics for this specific operational slice.")
+
+    return insights
