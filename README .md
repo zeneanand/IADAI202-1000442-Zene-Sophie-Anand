@@ -5,7 +5,7 @@
 
 **An Interactive Last-Mile Delivery Analytics and Statistical Intelligence Platform**
 
-LogiSight is a Python-based interactive analytics dashboard designed to explore last-mile delivery performance using statistical analysis, data preprocessing and interactive visualisations.
+LogiSight is a Python-based interactive analytics dashboard designed to explore last-mile delivery performance using statistical analysis, data preprocessing and interactive visualisations. 
 
 Developed as part of **Formative Assessment 2 (FA-2) for Mathematics for AI-II**, this project transforms the analytical planning from FA-1 into a functional multi-page web application using Streamlit.
 
